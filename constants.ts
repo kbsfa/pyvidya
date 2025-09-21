@@ -41,6 +41,7 @@ export const initialContext: AppContext = {
     ttsEnabled: true,
     sttEnabled: false,
     femaleVoicePreferred: true,
+    language: 'en-US', // Default language
   },
   curriculumSlice: {
     stageContent: initialCurriculum.stageContent ?? {},

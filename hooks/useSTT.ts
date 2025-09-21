@@ -23,7 +23,7 @@ declare global {
 // For browsers that support it, but might have vendor prefixes
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-export const useSTT = () => {
+export const useSTT = ({ lang = 'en-US' }: { lang?: string }) => {
     const [isListening, setIsListening] = useState(false);
     const [transcript, setTranscript] = useState('');
     const [error, setError] = useState<string | null>(null);
@@ -38,8 +38,7 @@ export const useSTT = () => {
         recognition.current = new SpeechRecognition();
         recognition.current.continuous = true;
         recognition.current.interimResults = true;
-        recognition.current.lang = 'en-US';
-
+        
         recognition.current.onresult = (event) => {
             let finalTranscript = '';
             let interimTranscript = '';
@@ -67,6 +66,13 @@ export const useSTT = () => {
             recognition.current?.stop();
         };
     }, []);
+
+    // Effect to update language if it changes
+    useEffect(() => {
+        if (recognition.current) {
+            recognition.current.lang = lang;
+        }
+    }, [lang]);
 
     const startListening = useCallback(() => {
         if (recognition.current && !isListening) {

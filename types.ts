@@ -85,6 +85,7 @@ export interface UIState {
   ttsEnabled: boolean;
   sttEnabled: boolean;
   femaleVoicePreferred: boolean;
+  language: string; // Added language property
 }
 
 export interface CurriculumSlice {

@@ -1,6 +1,5 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-// FIX: Added missing PyvidhyaResponse type import.
 import type { AppContext, LastRun, PyvidhyaAction, Test, PyvidhyaResponse } from './types';
 import { getPyvidhyaResponse } from './services/geminiService';
 import { usePyodide } from './hooks/usePyodide';
@@ -10,8 +9,19 @@ import AIAssistantPanel from './components/AIAssistantPanel';
 import CodeEditorPanel from './components/CodeEditorPanel';
 import SidePanel from './components/SidePanel';
 import { initialContext, initialResponse } from './constants';
-import { LoadingIcon, CoinIcon, StreakIcon, PanelLeftIcon } from './components/Icons';
+import { LoadingIcon, CoinIcon, StreakIcon, PanelLeftIcon, GlobeIcon } from './components/Icons';
 import { getCurriculumSlice, curriculum } from './curriculum';
+
+const supportedLanguages = [
+    { code: 'en-US', name: 'English (US)' },
+    { code: 'hi-IN', name: 'हिन्दी (Hindi)' },
+    { code: 'ta-IN', name: 'தமிழ் (Tamil)' },
+    { code: 'te-IN', name: 'తెలుగు (Telugu)' },
+    { code: 'kn-IN', name: 'ಕನ್ನಡ (Kannada)' },
+    { code: 'bn-IN', name: 'বাংলা (Bengali)' },
+    { code: 'mr-IN', name: 'मराठी (Marathi)' },
+    { code: 'gu-IN', name: 'ગુજરાતી (Gujarati)' },
+];
 
 export default function App() {
   const [context, setContext] = useState<AppContext>(initialContext);
@@ -19,17 +29,20 @@ export default function App() {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isPyvidhyaTyping, setIsPyvidhyaTyping] = useState<boolean>(false);
   
+  // FIX: Added state to manage user interaction for TTS autoplay policy
+  const [hasUserInteracted, setHasUserInteracted] = useState(false);
+  const initialGreetingToSpeak = useRef<{ content: string; lang: string } | null>(null);
+
   const { pyodideLoaded, runPython } = usePyodide();
   const { isSpeaking, speak, cancel } = useTTS();
-  const { isListening, transcript, startListening, stopListening, setTranscript } = useSTT();
+  const { isListening, transcript, startListening, stopListening, setTranscript } = useSTT({ lang: context.ui.language });
   const editorDirtyTimer = useRef<number | null>(null);
   
-  // Ref to track previous lesson indices for the navigation effect
   const prevLessonRef = useRef({ chapter: 0, episode: 0 });
 
   const triggerPyvidhyaResponse = useCallback(async (userInput: string, immediateUpdates: Partial<AppContext> = {}) => {
     if (isPyvidhyaTyping) return;
-    cancel(); // Stop any current speech
+    cancel();
     setIsPyvidhyaTyping(true);
 
     const updatedContext = {
@@ -57,33 +70,34 @@ export default function App() {
     }
   }, [context, isPyvidhyaTyping, cancel]);
 
+  // This effect handles speaking for all responses *after* the initial one.
   useEffect(() => {
-    if (pyvidhyaResponse.speakingContent && !isPyvidhyaTyping && context.ui.ttsEnabled) {
-      speak(pyvidhyaResponse.speakingContent);
+    if (pyvidhyaResponse.speakingContent && !isPyvidhyaTyping && context.ui.ttsEnabled && hasUserInteracted && !isLoading) {
+      speak(pyvidhyaResponse.speakingContent, context.ui.language);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pyvidhyaResponse, isPyvidhyaTyping, context.ui.ttsEnabled]);
+  }, [pyvidhyaResponse, isPyvidhyaTyping, context.ui.ttsEnabled, context.ui.language, hasUserInteracted, isLoading]);
 
   useEffect(() => {
-    // This effect runs when the lesson changes to trigger a greeting for the new lesson.
     const hasNavigated = prevLessonRef.current.chapter !== context.chapterIndex || prevLessonRef.current.episode !== context.episodeIndex;
     
     if (hasNavigated && !isLoading) {
       triggerPyvidhyaResponse(`System: User is navigating to Chapter ${context.chapterIndex + 1}, Episode ${context.episodeIndex + 1}: "${context.episodeTitle}". Please provide a greeting for this new lesson.`);
     }
 
-    // Update the ref to the current lesson indices for the next render
     prevLessonRef.current = { chapter: context.chapterIndex, episode: context.episodeIndex };
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [context.chapterIndex, context.episodeIndex, isLoading]);
 
-
+  // FIX: This effect now captures the initial greeting but doesn't speak it.
   const fetchInitialGreeting = useCallback(async () => {
     setIsPyvidhyaTyping(true);
     try {
       const response = await getPyvidhyaResponse(context, "The user has just loaded the application. Please provide a warm welcome and introduce the first lesson.");
       setPyvidhyaResponse(response);
+      // Store the initial greeting to be spoken after user interaction.
+      initialGreetingToSpeak.current = { content: response.speakingContent, lang: context.ui.language };
     } catch (error) {
       console.error("Error fetching initial greeting:", error);
     } finally {
@@ -96,6 +110,31 @@ export default function App() {
     fetchInitialGreeting();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // FIX: This effect handles the user interaction gate for the first speech.
+  useEffect(() => {
+    const unlockAudio = () => {
+        setHasUserInteracted(true);
+    };
+    
+    // Add event listeners that are removed after the first interaction
+    window.addEventListener('click', unlockAudio, { once: true });
+    window.addEventListener('keydown', unlockAudio, { once: true });
+
+    return () => {
+        window.removeEventListener('click', unlockAudio);
+        window.removeEventListener('keydown', unlockAudio);
+    };
+  }, []);
+
+  // FIX: This effect speaks the initial greeting once audio is unlocked.
+  useEffect(() => {
+      if (hasUserInteracted && initialGreetingToSpeak.current && context.ui.ttsEnabled) {
+          speak(initialGreetingToSpeak.current.content, initialGreetingToSpeak.current.lang);
+          initialGreetingToSpeak.current = null; // Ensure it only runs once
+      }
+  }, [hasUserInteracted, context.ui.ttsEnabled, speak]);
+
 
   const resetInactivity = useCallback(() => {
     setContext(prev => ({ ...prev, userSignals: { ...prev.userSignals, inactiveForSec: 0 } }));
@@ -110,6 +149,17 @@ export default function App() {
         }
     }));
   }, []);
+
+  const handleLanguageChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+      cancel();
+      setContext(prev => ({
+          ...prev,
+          ui: {
+              ...prev.ui,
+              language: e.target.value,
+          }
+      }));
+  };
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -154,10 +204,10 @@ export default function App() {
   };
 
   const checkSuccessCriteria = (output: string, tests: Test[]): boolean => {
-    if (!tests || tests.length === 0) return true; // Default to success if no tests
+    if (!tests || tests.length === 0) return true;
     return tests.every(test => 
         test.expect.every(substring => {
-            if (substring === "") return true; // Empty string expectation always passes
+            if (substring === "") return true;
             return output.includes(substring);
         })
     );
@@ -234,8 +284,7 @@ export default function App() {
       const prevChapterExists = !!curriculum[newChapterIndex - 1] || newEpisodeIndex > 0;
 
       const newContext: AppContext = {
-          ...context, // Preserve global state like progress, UI settings
-          // Reset lesson-specific state
+          ...context,
           chapterIndex: newChapterIndex,
           episodeIndex: newEpisodeIndex,
           chapterTitle: curriculum[newChapterIndex].title,
@@ -262,7 +311,6 @@ export default function App() {
           }
       };
       setContext(newContext);
-      // AI response is now triggered by the useEffect hook watching chapter/episode index
   };
 
   const handleAction = (action: PyvidhyaAction) => {
@@ -310,6 +358,18 @@ export default function App() {
             <p className="text-sm text-gray-600">Chapter {context.chapterIndex + 1}: {context.chapterTitle} - Episode {context.episodeIndex + 1}: {context.episodeTitle}</p>
         </div>
         <div className="flex items-center gap-6">
+            <div className="relative group">
+                <GlobeIcon />
+                <select 
+                    value={context.ui.language} 
+                    onChange={handleLanguageChange}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                >
+                    {supportedLanguages.map(lang => (
+                        <option key={lang.code} value={lang.code}>{lang.name}</option>
+                    ))}
+                </select>
+            </div>
             <div className="flex items-center bg-gray-800 p-2 rounded-lg">
                 <StreakIcon />
                 <span className="ml-2 text-red-500 font-bold text-lg">{context.progress.streakDays} Day Streak</span>
