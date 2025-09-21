@@ -72,7 +72,7 @@ export const getPyvidhyaResponse = async (context: AppContext, userInput: string
 
     try {
       const response = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
+          model: 'gemini-2.5-flash-lite',
           contents: prompt,
           config: {
             systemInstruction: systemInstruction,
@@ -85,9 +85,24 @@ export const getPyvidhyaResponse = async (context: AppContext, userInput: string
       
       const parsedResponse: PyvidhyaResponse = JSON.parse(cleanedText);
       return parsedResponse;
-    } catch (error) {
+    } catch (error: any) {
         console.error("Error generating or parsing Gemini response:", error);
-        // Fallback error response
+        
+        // Convert error to a string to safely inspect for rate limit codes.
+        const errorText = (error?.toString() || '').toLowerCase();
+
+        if (errorText.includes('429') || errorText.includes('resource_exhausted') || errorText.includes('quota')) {
+            return {
+                readingContent: "🚦 <strong>Looks like I'm a bit overwhelmed!</strong><br>I'm getting a high-traffic signal from my brain (the API), which means my request quota has been exceeded. This usually happens after a lot of activity.<br><br>Please wait a minute or two for things to cool down, and then try again. Thanks for your patience!",
+                speakingContent: "Looks like I'm getting a lot of requests right now. Please wait a minute and then try again.",
+                actions: [],
+                checklist: [],
+                rubric: { stage: context.stage, successCriteria: ["Wait for API rate limit to reset."], commonMistakes: [] },
+                nextStep: { label: "Wait and Retry", reason: "The AI service is temporarily unavailable due to rate limiting. Waiting a moment usually resolves this." }
+            };
+        }
+
+        // Fallback error response for other errors
         return {
             readingContent: "⚠️ <strong>Critical Error!</strong><br>I'm having trouble thinking right now. It might be an issue with my connection or the API response format. Please check the console for more details.",
             speakingContent: "Oh no, I'm having trouble thinking right now. Please check the developer console for error details.",

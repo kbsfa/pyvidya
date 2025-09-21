@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { AppContext, LastRun, PyvidhyaAction, Test, PyvidhyaResponse } from './types';
 import { getPyvidhyaResponse } from './services/geminiService';
@@ -29,20 +30,21 @@ export default function App() {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isPyvidhyaTyping, setIsPyvidhyaTyping] = useState<boolean>(false);
   
-  // FIX: Added state to manage user interaction for TTS autoplay policy
   const [hasUserInteracted, setHasUserInteracted] = useState(false);
-  const initialGreetingToSpeak = useRef<{ content: string; lang: string } | null>(null);
+  const [speechQueue, setSpeechQueue] = useState<{ content: string; lang: string }[]>([]);
 
   const { pyodideLoaded, runPython } = usePyodide();
-  const { isSpeaking, speak, cancel } = useTTS();
+  const { isSpeaking, speak, cancel, voicesLoaded } = useTTS();
   const { isListening, transcript, startListening, stopListening, setTranscript } = useSTT({ lang: context.ui.language });
   const editorDirtyTimer = useRef<number | null>(null);
   
+  const isProcessingQueue = useRef(false);
   const prevLessonRef = useRef({ chapter: 0, episode: 0 });
 
   const triggerPyvidhyaResponse = useCallback(async (userInput: string, immediateUpdates: Partial<AppContext> = {}) => {
     if (isPyvidhyaTyping) return;
     cancel();
+    setSpeechQueue([]); // Clear any pending speech.
     setIsPyvidhyaTyping(true);
 
     const updatedContext = {
@@ -70,13 +72,65 @@ export default function App() {
     }
   }, [context, isPyvidhyaTyping, cancel]);
 
-  // This effect handles speaking for all responses *after* the initial one.
+  // Speech Queue System: Effect 1 - Queue Adder
+  // This effect watches for new AI responses and adds their content to the speech queue.
   useEffect(() => {
-    if (pyvidhyaResponse.speakingContent && !isPyvidhyaTyping && context.ui.ttsEnabled && hasUserInteracted && !isLoading) {
-      speak(pyvidhyaResponse.speakingContent, context.ui.language);
+    // Don't queue the initial, static placeholder content.
+    if (pyvidhyaResponse.speakingContent && pyvidhyaResponse.speakingContent !== initialResponse.speakingContent) {
+        setSpeechQueue(q => [...q, { content: pyvidhyaResponse.speakingContent, lang: context.ui.language }]);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pyvidhyaResponse, isPyvidhyaTyping, context.ui.ttsEnabled, context.ui.language, hasUserInteracted, isLoading]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pyvidhyaResponse.speakingContent, context.ui.language]);
+
+  // Speech Queue System: Effect 2 - Queue Processor
+  // This is the single consumer of the speech queue. It is designed to be robust against race conditions.
+  useEffect(() => {
+    // Gates: Don't speak if we're already speaking, if the queue is empty,
+    // if the user hasn't interacted, if TTS isn't enabled, if we are already processing,
+    // or crucially, if the browser's TTS voices haven't loaded yet.
+    if (isSpeaking || speechQueue.length === 0 || !hasUserInteracted || !context.ui.ttsEnabled || isProcessingQueue.current || !voicesLoaded) {
+        return;
+    }
+
+    // Engage the lock to prevent this effect from re-triggering for the same item
+    // on subsequent renders before `isSpeaking` becomes true.
+    isProcessingQueue.current = true;
+
+    const [nextItem] = speechQueue;
+
+    const success = speak(nextItem.content, {
+      lang: nextItem.lang,
+      femaleVoicePreferred: context.ui.femaleVoicePreferred,
+      callbacks: {
+        onStart: () => {
+          // Now that speech has actually started, we can safely consume the item from the queue.
+          // Using the functional form of setState ensures we're acting on the latest queue state.
+          setSpeechQueue(q => q.slice(1));
+        },
+        onError: () => {
+          // If an error occurs, consume the item to prevent getting stuck.
+          // This handles both async utterance errors and sync setup errors like 'voice-not-found'.
+          setSpeechQueue(q => q.slice(1));
+        }
+      }
+    });
+
+    if (!success) {
+      // If speaking failed to even start (e.g., no voices found), the async
+      // onStart/onError utterance callbacks won't fire. We must release the lock
+      // manually. The synchronous onError call inside speak() already handled
+      // removing the item from the queue.
+      isProcessingQueue.current = false;
+    }
+  }, [speechQueue, isSpeaking, hasUserInteracted, context.ui.ttsEnabled, speak, voicesLoaded, context.ui.femaleVoicePreferred]);
+
+  // This effect manages the lock. When speaking starts or stops, we are no longer
+  // in the liminal "processing" state, so the lock can be released.
+  // The `isSpeaking` state becomes the new guard for the processor effect.
+  useEffect(() => {
+      isProcessingQueue.current = false;
+  }, [isSpeaking]);
+
 
   useEffect(() => {
     const hasNavigated = prevLessonRef.current.chapter !== context.chapterIndex || prevLessonRef.current.episode !== context.episodeIndex;
@@ -90,14 +144,12 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [context.chapterIndex, context.episodeIndex, isLoading]);
 
-  // FIX: This effect now captures the initial greeting but doesn't speak it.
   const fetchInitialGreeting = useCallback(async () => {
     setIsPyvidhyaTyping(true);
     try {
       const response = await getPyvidhyaResponse(context, "The user has just loaded the application. Please provide a warm welcome and introduce the first lesson.");
+      // This will be picked up by the queue adder effect to be spoken.
       setPyvidhyaResponse(response);
-      // Store the initial greeting to be spoken after user interaction.
-      initialGreetingToSpeak.current = { content: response.speakingContent, lang: context.ui.language };
     } catch (error) {
       console.error("Error fetching initial greeting:", error);
     } finally {
@@ -111,7 +163,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // FIX: This effect handles the user interaction gate for the first speech.
+  // This effect handles the user interaction gate for the first speech.
   useEffect(() => {
     const unlockAudio = () => {
         setHasUserInteracted(true);
@@ -126,15 +178,6 @@ export default function App() {
         window.removeEventListener('keydown', unlockAudio);
     };
   }, []);
-
-  // FIX: This effect speaks the initial greeting once audio is unlocked.
-  useEffect(() => {
-      if (hasUserInteracted && initialGreetingToSpeak.current && context.ui.ttsEnabled) {
-          speak(initialGreetingToSpeak.current.content, initialGreetingToSpeak.current.lang);
-          initialGreetingToSpeak.current = null; // Ensure it only runs once
-      }
-  }, [hasUserInteracted, context.ui.ttsEnabled, speak]);
-
 
   const resetInactivity = useCallback(() => {
     setContext(prev => ({ ...prev, userSignals: { ...prev.userSignals, inactiveForSec: 0 } }));
@@ -152,6 +195,7 @@ export default function App() {
 
   const handleLanguageChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
       cancel();
+      setSpeechQueue([]);
       setContext(prev => ({
           ...prev,
           ui: {
