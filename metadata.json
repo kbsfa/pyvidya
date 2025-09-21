@@ -1,0 +1,8 @@
+{
+  "name": "Pyvidhya: Your AI Python Teacher",
+  "description": "An interactive learning platform where a friendly AI persona, Pyvidhya, guides you through Python programming lessons from basics to advanced topics. Features a live code editor, real-time feedback, and a structured curriculum.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
